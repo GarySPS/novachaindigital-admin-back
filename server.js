@@ -10,7 +10,8 @@ const bcrypt = require('bcrypt');
 const pool = require('./db');
 const path = require('path');
 const multer = require('multer');
-const upload = multer({ dest: path.join(__dirname, 'uploads') });
+const storage = multer.memoryStorage();
+const upload = multer({ storage });
 
 const app = express();
 const PORT = 5001;
@@ -224,38 +225,66 @@ app.post('/api/admin/change-password', requireAdminAuth, async (req, res) => {
 app.post(
   '/api/admin/deposit-addresses',
   requireAdminAuth,
-  requireSuperAdmin, // <-- superadmin only!
+  requireSuperAdmin,
   upload.any(),
   async (req, res) => {
     try {
+      const { createClient } = require('@supabase/supabase-js');
+      const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+      
       const coins = ['USDT', 'BTC', 'ETH', 'TON', 'SOL', 'XRP'];
       let updated = 0;
+
       for (const coin of coins) {
         const address = req.body[`${coin}_address`] || '';
         let qr_url = null;
+        
+        // Find the uploaded photo for this specific coin
         const qrFile = (req.files || []).find(f => f.fieldname === `${coin}_qr`);
+
         if (qrFile) {
-          qr_url = `/uploads/${qrFile.filename}`;
+          // Create a unique filename for Supabase
+          const filename = `admin-qr-${coin}-${Date.now()}.png`;
+
+          // Upload directly to your 'deposit' bucket
+          const { data, error: uploadError } = await supabase.storage
+            .from('deposit')
+            .upload(filename, qrFile.buffer, {
+              contentType: qrFile.mimetype,
+              upsert: true
+            });
+
+          if (uploadError) {
+            console.error(`Supabase upload error for ${coin}:`, uploadError.message);
+          } else {
+            // Get the permanent Public URL
+            const { data: urlData } = supabase.storage.from('deposit').getPublicUrl(filename);
+            qr_url = urlData.publicUrl;
+          }
         }
+
+        // Save to Database: If we have a new address OR a new QR URL
         if (address || qr_url) {
           await pool.query(
             `
             INSERT INTO deposit_addresses (coin, address, qr_url, updated_at)
             VALUES ($1, $2, $3, NOW())
             ON CONFLICT (coin)
-            DO UPDATE SET address = $2, qr_url = COALESCE($3, deposit_addresses.qr_url), updated_at = NOW()
+            DO UPDATE SET 
+              address = CASE WHEN $2 <> '' THEN $2 ELSE deposit_addresses.address END, 
+              qr_url = COALESCE($3, deposit_addresses.qr_url), 
+              updated_at = NOW()
             `,
             [coin, address, qr_url]
           );
           updated++;
         }
       }
-      if (!updated) {
-        return res.status(400).json({ success: false, message: "No address or QR uploaded" });
-      }
-      res.json({ success: true, message: "Deposit wallet settings updated" });
+
+      res.json({ success: true, message: "Deposit settings saved to Supabase permanent storage." });
     } catch (err) {
-      res.status(500).json({ success: false, message: "Failed to save deposit settings", detail: err.message });
+      console.error("ADMIN SETTINGS ERROR:", err);
+      res.status(500).json({ success: false, message: "Failed to save settings", detail: err.message });
     }
   }
 );
