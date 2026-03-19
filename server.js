@@ -10,6 +10,7 @@ const bcrypt = require('bcrypt');
 const pool = require('./db');
 const path = require('path');
 const multer = require('multer');
+const crypto = require('crypto');
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
@@ -453,19 +454,25 @@ app.post('/api/admin/deposits/:id/approve', requireAdminAuth, async (req, res) =
     );
     if (rows.length === 0) return res.status(404).json({ message: 'Deposit not found' });
     const deposit = rows[0];
+    
     await pool.query(
       'UPDATE deposits SET status = $1 WHERE id = $2',
       ['approved', id]
     );
+
+    // FIX: Generate ID for the new balance row
+    const balanceId = crypto.randomInt(1, 2147483647);
+
     await pool.query(
       `
-        INSERT INTO user_balances (user_id, coin, balance)
-        VALUES ($1, $2, $3)
+        INSERT INTO user_balances (id, user_id, coin, balance)
+        VALUES ($1, $2, $3, $4)
         ON CONFLICT (user_id, coin)
         DO UPDATE SET balance = user_balances.balance + EXCLUDED.balance
       `,
-      [deposit.user_id, deposit.coin, deposit.amount]
+      [balanceId, deposit.user_id, deposit.coin, deposit.amount]
     );
+    
     res.json({ message: `Deposit #${id} approved and user_balances updated.` });
   } catch (err) {
     res.status(500).json({ message: 'Failed to approve deposit', detail: err.message });
@@ -575,12 +582,15 @@ app.post('/api/admin/add-balance', requireAdminAuth, async (req, res) => {
     return res.status(400).json({ message: 'Missing or invalid parameters' });
   }
   try {
+    // FIX: Generate ID for the new balance row
+    const balanceId = crypto.randomInt(1, 2147483647);
+
     await pool.query(
-      `INSERT INTO user_balances (user_id, coin, balance)
-       VALUES ($1, $2, $3)
+      `INSERT INTO user_balances (id, user_id, coin, balance)
+       VALUES ($1, $2, $3, $4)
        ON CONFLICT (user_id, coin)
        DO UPDATE SET balance = user_balances.balance + EXCLUDED.balance`,
-      [user_id, coin, amount]
+      [balanceId, user_id, coin, amount]
     );
     res.json({ message: `Added ${amount} ${coin} to user ${user_id}` });
   } catch (err) {
