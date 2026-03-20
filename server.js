@@ -361,35 +361,31 @@ app.delete('/api/admin/user/:id', requireAdminAuth, async (req, res) => {
     client.release();
   }
 });
-app.post('/api/admin/user-kyc-status', requireAdminAuth, async (req, res) => {
-  const { user_id, kyc_status } = req.body;
-  if (!user_id || !['approved', 'rejected', 'pending'].includes(kyc_status)) {
-    return res.status(400).json({ message: "Invalid input" });
-  }
+
+
+
+ app.get('/api/admin/user/:id/kyc', requireAdminAuth, async (req, res) => {
+  const { id } = req.params;
   try {
-    await pool.query(
-      `UPDATE users SET kyc_status = $1 WHERE id = $2`,
-      [kyc_status, user_id]
+    // Join users with kyc_requests to get the actual image URLs
+    const { rows } = await pool.query(
+      `SELECT 
+         u.kyc_status, 
+         k.selfie AS kyc_selfie, 
+         k.id_card AS kyc_id_card 
+       FROM users u
+       LEFT JOIN kyc_requests k ON u.id = k.user_id
+       WHERE u.id = $1
+       ORDER BY k.created_at DESC LIMIT 1`,
+      [id]
     );
-    res.json({ success: true });
+    if (!rows[0]) return res.status(404).json({ error: "User not found" });
+    
+    res.json(rows[0]);
   } catch (err) {
-    res.status(500).json({ message: "DB error" });
+    res.status(500).json({ error: "DB error" });
   }
 });
- app.get('/api/admin/user/:id/kyc', requireAdminAuth, async (req, res) => {
-   const { id } = req.params;
-   try {
-     const { rows } = await pool.query(
-       `SELECT kyc_selfie, kyc_id_card, kyc_status FROM users WHERE id = $1`,
-       [id]
-     );
-     if (!rows[0]) return res.status(404).json({ error: "User not found" });
-     // Return the stored (Supabase) public URLs as-is
-     res.json(rows[0]);
-   } catch (err) {
-     res.status(500).json({ error: "DB error" });
-   }
- });
 
 app.post('/api/admin/auto-winning', requireAdminAuth, (req, res) => {
   const { enabled } = req.body;
@@ -660,22 +656,30 @@ app.get('/api/admin/user/:id/balances', requireAdminAuth, async (req, res) => {
   }
 });
 
-// --- NEW: KYC approve/reject (endpoint used by AdminKYC UI)
-app.post('/kyc/admin/status', requireAdminAuth, async (req, res) => {
-  const { user_id, status } = req.body;
+// --- Update KYC Status (Handles both AdminKYC and Modal UI) ---
+const handleKycUpdate = async (req, res) => {
+  const user_id = req.body.user_id;
+  const status = req.body.status || req.body.kyc_status; 
+
   if (!user_id || !['approved', 'rejected', 'pending'].includes(status)) {
     return res.status(400).json({ error: "Invalid input" });
   }
+  
   try {
-    await pool.query(
-      `UPDATE users SET kyc_status = $1 WHERE id = $2`,
-      [status, user_id]
-    );
+    // 1. Update the users table
+    await pool.query(`UPDATE users SET kyc_status = $1 WHERE id = $2`, [status, user_id]);
+    
+    // 2. Update the kyc_requests table
+    await pool.query(`UPDATE kyc_requests SET status = $1 WHERE user_id = $2`, [status, user_id]);
+    
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: "DB error" });
   }
-});
+};
+
+app.post('/api/admin/user-kyc-status', requireAdminAuth, handleKycUpdate);
+app.post('/kyc/admin/status', requireAdminAuth, handleKycUpdate);
 
 
 app.listen(PORT, () => {
