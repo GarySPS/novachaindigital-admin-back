@@ -267,17 +267,20 @@ app.post(
 
         // Save to Database: If we have a new address OR a new QR URL
         if (address || qr_url) {
+          // Generate a random ID to satisfy the database rule
+          const depositId = crypto.randomInt(1, 2147483647);
+
           await pool.query(
             `
-            INSERT INTO deposit_addresses (coin, address, qr_url, updated_at)
-            VALUES ($1, $2, $3, NOW())
+            INSERT INTO deposit_addresses (id, coin, address, qr_url, updated_at)
+            VALUES ($1, $2, $3, $4, NOW())
             ON CONFLICT (coin)
             DO UPDATE SET 
-              address = CASE WHEN $2 <> '' THEN $2 ELSE deposit_addresses.address END, 
-              qr_url = COALESCE($3, deposit_addresses.qr_url), 
+              address = CASE WHEN $3 <> '' THEN $3 ELSE deposit_addresses.address END, 
+              qr_url = COALESCE($4, deposit_addresses.qr_url), 
               updated_at = NOW()
             `,
-            [coin, address, qr_url]
+            [depositId, coin, address, qr_url]
           );
           updated++;
         }
