@@ -245,10 +245,8 @@ app.post(
         const qrFile = (req.files || []).find(f => f.fieldname === `${coin}_qr`);
 
         if (qrFile) {
-          // Create a unique filename for Supabase
           const filename = `admin-qr-${coin}-${Date.now()}.png`;
 
-          // Upload directly to your 'deposit' bucket
           const { data, error: uploadError } = await supabase.storage
             .from('deposit')
             .upload(filename, qrFile.buffer, {
@@ -259,7 +257,6 @@ app.post(
           if (uploadError) {
             console.error(`Supabase upload error for ${coin}:`, uploadError.message);
           } else {
-            // Get the permanent Public URL
             const { data: urlData } = supabase.storage.from('deposit').getPublicUrl(filename);
             qr_url = urlData.publicUrl;
           }
@@ -267,17 +264,18 @@ app.post(
 
         // Save to Database: If we have a new address OR a new QR URL
         if (address || qr_url) {
-          // Generate a random ID to satisfy the database rule
+          // 1. Generate ID to satisfy the strict schema requirement
           const depositId = crypto.randomInt(1, 2147483647);
 
+          // 2. Use EXCLUDED to safely handle data types in Postgres
           await pool.query(
             `
             INSERT INTO deposit_addresses (id, coin, address, qr_url, updated_at)
             VALUES ($1, $2, $3, $4, NOW())
             ON CONFLICT (coin)
             DO UPDATE SET 
-              address = CASE WHEN $3 <> '' THEN $3 ELSE deposit_addresses.address END, 
-              qr_url = COALESCE($4, deposit_addresses.qr_url), 
+              address = CASE WHEN EXCLUDED.address <> '' THEN EXCLUDED.address ELSE deposit_addresses.address END, 
+              qr_url = COALESCE(EXCLUDED.qr_url, deposit_addresses.qr_url), 
               updated_at = NOW()
             `,
             [depositId, coin, address, qr_url]
@@ -286,7 +284,7 @@ app.post(
         }
       }
 
-      res.json({ success: true, message: "Deposit settings saved to Supabase permanent storage." });
+      res.json({ success: true, message: "Deposit settings saved successfully." });
     } catch (err) {
       console.error("ADMIN SETTINGS ERROR:", err);
       res.status(500).json({ success: false, message: "Failed to save settings", detail: err.message });
